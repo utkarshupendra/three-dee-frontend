@@ -161,6 +161,8 @@ function App() {
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState('')
+  const [progressPercent, setProgressPercent] = useState(0)
+  const [jobId, setJobId] = useState<string | null>(null)
   const [savedModels, setSavedModels] = useState<SavedModel[]>([])
   const [selectedModel, setSelectedModel] = useState<SavedModel | null>(null)
   const [editingModel, setEditingModel] = useState<number | null>(null)
@@ -192,6 +194,55 @@ function App() {
     setError(null)
   }
 
+  const pollJobStatus = useCallback(async (jobId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/job/${jobId}`)
+      if (!response.ok) throw new Error('Failed to get job status')
+      
+      const data = await response.json()
+      setProgress(data.message || 'Processing...')
+      setProgressPercent(data.progress || 0)
+      
+      if (data.status === 'completed' && data.result) {
+        setConversionResult({
+          status: 'success',
+          task_id: jobId,
+          model_id: data.result.model_id,
+          model_url: data.result.model_url,
+          thumbnail_url: data.result.thumbnail_url
+        })
+        setIsConverting(false)
+        setJobId(null)
+        setProgress('')
+        setProgressPercent(100)
+        fetchModels()
+        return true
+      } else if (data.status === 'failed') {
+        setError(data.error || 'Conversion failed')
+        setIsConverting(false)
+        setJobId(null)
+        setProgress('')
+        setProgressPercent(0)
+        return true
+      }
+      return false
+    } catch (err) {
+      console.error('Polling error:', err)
+      return false
+    }
+  }, [fetchModels])
+
+  useEffect(() => {
+    if (!jobId || !isConverting) return
+    
+    const interval = setInterval(async () => {
+      const isDone = await pollJobStatus(jobId)
+      if (isDone) clearInterval(interval)
+    }, 2000)
+    
+    return () => clearInterval(interval)
+  }, [jobId, isConverting, pollJobStatus])
+
   const handleConvert = async () => {
     if (!viewImages.front) {
       setError('Front view image is required')
@@ -201,6 +252,8 @@ function App() {
     setIsConverting(true)
     setError(null)
     setProgress('Uploading images...')
+    setProgressPercent(0)
+    setConversionResult(null)
 
     try {
       const formData = new FormData()
@@ -209,9 +262,6 @@ function App() {
       if (viewImages.left) formData.append('left', viewImages.left)
       if (viewImages.right) formData.append('right', viewImages.right)
       if (modelName) formData.append('name', modelName)
-
-      const viewCount = [viewImages.front, viewImages.back, viewImages.left, viewImages.right].filter(Boolean).length
-      setProgress(`Processing ${viewCount} view(s) with Tripo3D (30-90 seconds)...`)
 
       const response = await fetch(`${API_BASE}/api/convert-multiview`, {
         method: 'POST',
@@ -224,13 +274,13 @@ function App() {
       }
 
       const result = await response.json()
-      setConversionResult(result)
-      setProgress('')
-      fetchModels()
+      setJobId(result.job_id)
+      setProgress(result.message || 'Job started...')
+      setProgressPercent(5)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
       setProgress('')
-    } finally {
+      setProgressPercent(0)
       setIsConverting(false)
     }
   }
@@ -353,7 +403,20 @@ function App() {
                 {isConverting ? <><Loader2 className="w-5 h-5 animate-spin" /> Converting...</> : <><Box className="w-5 h-5" /> Convert to 3D</>}
               </button>
 
-              {progress && <p className="mt-3 text-center text-purple-400 text-sm animate-pulse">{progress}</p>}
+              {isConverting && (
+                <div className="mt-4 space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-purple-400">{progress}</span>
+                    <span className="text-gray-400">{progressPercent}%</span>
+                  </div>
+                  <div className="w-full h-3 bg-black/30 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               {error && <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg"><p className="text-red-400 text-sm">{error}</p></div>}
             </div>
 
